@@ -4,11 +4,26 @@ import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
+import sys
+import scipy
+import importlib.metadata
 
 app = FastAPI()
 
-# Enable CORS for frontend
+# ======== VERSION CHECK AT STARTUP ========
+@app.on_event("startup")
+async def log_versions():
+    print("\n========== ENVIRONMENT INFO ==========")
+    print(f"Python version: {sys.version}")
+    print(f"NumPy version: {np.__version__}")
+    print(f"SciPy version: {scipy.__version__}")
+    try:
+        print(f"Pythran version: {importlib.metadata.version('pythran')}")
+    except importlib.metadata.PackageNotFoundError:
+        print("Pythran not installed.")
+    print("=======================================\n")
+
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,7 +48,7 @@ config_list = [
     "Hybrid", "Plasma"
 ]
 
-# Load surrogate models
+# Load models
 models = {}
 for config_name in config_list:
     file_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
@@ -49,26 +64,20 @@ for config_name in config_list:
 @app.post("/predict")
 async def predict(request: Request):
     input_data = await request.json()
-
-    # Extract emission scenario (default to RE1 if not provided)
     scenario_key = input_data.get("emission_scenario", "RE1")
     scenario_map = {
         "fossil": "Emissions_energmix_fossil",
         "RE1": "Emissions_energymix_RE1",
         "RE2": "Emissions_energymix_RE2"
     }
-
     emissions_column = scenario_map.get(scenario_key)
-
     if emissions_column is None:
         return {"error": f"Invalid emission_scenario: {scenario_key}"}
 
-    # Load emissions and energy data from CSV
     emissions_df = pd.read_csv(EMISSIONS_FILE)
     emissions_dict = dict(zip(emissions_df['Case'], emissions_df[emissions_column]))
     energy_dict = dict(zip(emissions_df['Case'], emissions_df['Spec_Energy']))
 
-    # Create input array
     try:
         input_vector = np.array([
             input_data["cEE"],
@@ -80,11 +89,10 @@ async def predict(request: Request):
             input_data["cMSW"],
             input_data["cCO2"],
             input_data["cCO2TnS"]
-        ],  dtype=np.float64).reshape(1, -1)
+        ], dtype=np.float64).reshape(1, -1)
     except Exception as e:
         return {"error": f"Invalid input vector: {str(e)}"}
 
-    # Prediction results
     results = {}
     for config_name in config_list:
         try:
@@ -103,8 +111,3 @@ async def predict(request: Request):
             results[config_name] = {"error": str(e)}
 
     return {"results": results}
-
-# Path to built frontend
-FRONTEND_DIST = BASE_DIR / "pareto-frontend" / "dist"
-if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="static")

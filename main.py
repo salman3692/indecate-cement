@@ -36,8 +36,7 @@ config_list = [
 # Load surrogate models
 models = {}
 for config_name in config_list:
-    # file_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
-    file_path = MODELS_DIR / f"surrogate_{config_name}_linux.pkl"
+    file_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
     if file_path.exists():
         try:
             model = joblib.load(file_path)

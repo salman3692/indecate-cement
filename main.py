@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
+import inspect
 
 app = FastAPI()
 
@@ -40,6 +41,14 @@ for config_name in config_list:
     if file_path.exists():
         try:
             model = joblib.load(file_path)
+            # Debug info
+            print(f"✅ Loaded model: {config_name}")
+            print(f"    Type: {type(model)}, Callable: {callable(model)}, Module: {getattr(model, '__module__', None)}")
+            try:
+                sig = inspect.signature(model)
+                print(f"    Signature: {sig}")
+            except Exception as e:
+                print(f"    Signature inspect failed: {e}")
             models[config_name] = model
         except Exception as e:
             print(f"❌ Failed to load {config_name}: {e}")
@@ -59,7 +68,6 @@ async def predict(request: Request):
     }
 
     emissions_column = scenario_map.get(scenario_key)
-
     if emissions_column is None:
         return {"error": f"Invalid emission_scenario: {scenario_key}"}
 
@@ -80,7 +88,7 @@ async def predict(request: Request):
             input_data["cMSW"],
             input_data["cCO2"],
             input_data["cCO2TnS"]
-        ],  dtype=np.float64).reshape(1, -1)
+        ], dtype=np.float64).reshape(1, -1)
     except Exception as e:
         return {"error": f"Invalid input vector: {str(e)}"}
 
@@ -91,9 +99,19 @@ async def predict(request: Request):
             model = models.get(config_name)
             if model is None:
                 raise ValueError("Model not loaded.")
-            cost = float(model(np.ascontiguousarray(input_vector, dtype=np.float64))[0])
+
+            # Try .predict() first
+            if hasattr(model, "predict"):
+                cost = float(model.predict(input_vector)[0])
+            else:
+                raise ValueError(
+                    f"Model for {config_name} is of type {type(model)} and has no .predict(). "
+                    "It may be a raw Pythran function requiring extra args."
+                )
+
             emissions = float(emissions_dict.get(config_name, 0.0))
             spec_energy = float(energy_dict.get(config_name, 0.0))
+
             results[config_name] = {
                 "cost": round(cost, 4),
                 "emissions": round(emissions, 4),

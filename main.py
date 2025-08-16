@@ -80,7 +80,7 @@ async def predict(request: Request):
             input_data["cMSW"],
             input_data["cCO2"],
             input_data["cCO2TnS"]
-        ], dtype=np.float32, order="C").reshape(1, -1)
+        ],  dtype=np.float64).reshape(1, -1)
     except Exception as e:
         return {"error": f"Invalid input vector: {str(e)}"}
 
@@ -91,7 +91,7 @@ async def predict(request: Request):
             model = models.get(config_name)
             if model is None:
                 raise ValueError("Model not loaded.")
-            cost = float(model(input_vector)[0])
+            cost = float(model(np.ascontiguousarray(input_vector, dtype=np.float64))[0])
             emissions = float(emissions_dict.get(config_name, 0.0))
             spec_energy = float(energy_dict.get(config_name, 0.0))
             results[config_name] = {

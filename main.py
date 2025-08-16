@@ -80,7 +80,7 @@ async def predict(request: Request):
             input_data["cMSW"],
             input_data["cCO2"],
             input_data["cCO2TnS"]
-        ]).reshape(1, -1)
+        ]dtype=np.float32, order="C").reshape(1, -1)
     except Exception as e:
         return {"error": f"Invalid input vector: {str(e)}"}
 

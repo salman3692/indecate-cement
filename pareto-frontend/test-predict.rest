@@ -1,0 +1,14 @@
+POST http://127.0.0.1:8000/predict
+Content-Type: application/json
+
+{
+  "cEE": 0.05,
+  "cH2": 0.05,
+  "cNG": 0.05,
+  "cbioCH4": 0.08,
+  "cbiomass": 0.05,
+  "cCoal": 0.05,
+  "cMSW": 0.05,
+  "cCO2": 0.1,
+  "cCO2TnS": 0.05
+}

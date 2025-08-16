@@ -1,0 +1,32 @@
+{
+  "name": "cement-indecate",
+  "private": true,
+  "dependencies": {
+    "axios": "^1.10.0",
+    "plotly.js": "^3.0.1",
+    "react-plotly.js": "^2.6.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.11"
+  },
+  "scripts": {
+    "heroku-postbuild": "npm --prefix pareto-frontend ci && npm --prefix pareto-frontend run build"
+  }
+}
+
+
+// This is the old package.json file
+// {
+//   "dependencies": {
+//     "axios": "^1.10.0",
+//     "plotly.js": "^3.0.1",
+//     "react-plotly.js": "^2.6.0"
+//   },
+//   "devDependencies": {
+//     "autoprefixer": "^10.4.21",
+//     "postcss": "^8.5.6",
+//     "tailwindcss": "^4.1.11"
+//   }
+// }

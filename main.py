@@ -5,11 +5,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
-import traceback
 
 app = FastAPI()
 
-# Enable CORS for frontend (so your React app can fetch from it)
+# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,12 +17,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Directories
+# Base directories
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 EMISSIONS_FILE = BASE_DIR / "emissions.csv"
 
-# Configurations
+# Config list (extended with MEA_HPs)
 config_list = [
     "BM", "BM_CC_CaL", "BM_CC_MEA", "BM_CC_MEA_HPs", "BM_CC_Oxy",
     "BG", "BG_CC_CaL", "BG_CC_MEA", "BG_CC_MEA_HPs", "BG_CC_Oxy",
@@ -34,92 +33,46 @@ config_list = [
     "Hybrid", "Plasma"
 ]
 
-def safe_load_model(file_path):
-    """Try loading models safely with multiple patterns."""
-    try:
-        model = joblib.load(file_path)
-        # Unwrap tuples (e.g. (scaler, model))
-        if isinstance(model, tuple):
-            for part in model:
-                if callable(part) or hasattr(part, "predict"):
-                    model = part
-                    break
-        return model
-    except Exception as e:
-        print(f"⚠️ Could not load model {file_path.name}: {e}")
-        return None
-
-
-def safe_predict(model, x):
-    """Try to predict with all possible fallbacks."""
-    try:
-        # sklearn-like
-        if hasattr(model, "predict"):
-            return float(model.predict(x)[0])
-
-        # callable (e.g. RBFInterpolator)
-        elif callable(model):
-            try:
-                return float(model(x)[0])
-            except Exception:
-                # Sometimes RBF models require flattening
-                return float(model(np.ascontiguousarray(x.flatten()))[0])
-
-        # If all else fails
-        else:
-            raise TypeError("Model is not callable or compatible")
-
-    except Exception as e:
-        msg = str(e)
-        # Detect view/contiguity issues
-        if "is a view" in msg or "pythranized" in msg:
-            try:
-                x2 = np.ascontiguousarray(x, dtype=np.float64)
-                return float(model(x2)[0])
-            except Exception as inner:
-                raise RuntimeError(f"Contiguity retry failed: {inner}")
-        # Return the original error if all retries fail
-        raise
-
-
-# Load all models safely
+# Load surrogate models
 models = {}
-for cfg in config_list:
-    f = MODELS_DIR / f"surrogate_{cfg}.pkl"
-    if f.exists():
-        models[cfg] = safe_load_model(f)
+for config_name in config_list:
+    file_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
+    if file_path.exists():
+        try:
+            model = joblib.load(file_path)
+            # If model is a tuple (e.g., (poly, model)), unpack
+            if isinstance(model, tuple):
+                model = model[0]
+            models[config_name] = model
+        except Exception as e:
+            print(f"Failed to load {config_name}: {e}")
     else:
-        print(f"❌ Model not found: {cfg}")
-
+        print(f"Skipped model: {config_name} (file not found)")
 
 @app.post("/predict")
 async def predict(request: Request):
-    """Main prediction endpoint."""
-    try:
-        input_data = await request.json()
-    except Exception:
-        return {"error": "Invalid JSON input"}
+    input_data = await request.json()
 
-    # Select emission scenario
+    # Extract emission scenario (default to RE1 if not provided)
+    scenario_key = input_data.get("emission_scenario", "RE1")
     scenario_map = {
         "fossil": "Emissions_energmix_fossil",
         "RE1": "Emissions_energymix_RE1",
-        "RE2": "Emissions_energymix_RE2",
+        "RE2": "Emissions_energymix_RE2"
     }
-    scenario_key = input_data.get("emission_scenario", "RE1")
-    emissions_column = scenario_map.get(scenario_key, "Emissions_energymix_RE1")
 
-    # Load emissions
-    try:
-        df = pd.read_csv(EMISSIONS_FILE)
-        emissions = dict(zip(df["Case"], df[emissions_column]))
-        energy = dict(zip(df["Case"], df["Spec_Energy"]))
-    except Exception as e:
-        return {"error": f"Cannot read emissions file: {e}"}
+    emissions_column = scenario_map.get(scenario_key)
+    if emissions_column is None:
+        return {"error": f"Invalid emission_scenario: {scenario_key}"}
 
-    # Input vector
+    # Load emissions and energy data from CSV
+    emissions_df = pd.read_csv(EMISSIONS_FILE)
+    emissions_dict = dict(zip(emissions_df['Case'], emissions_df[emissions_column]))
+    energy_dict = dict(zip(emissions_df['Case'], emissions_df['Spec_Energy']))
+
+    # Create input array
     try:
-        x = np.array([
+        input_vector = np.array([
             input_data["cEE"],
             input_data["cH2"],
             input_data["cNG"],
@@ -131,31 +84,38 @@ async def predict(request: Request):
             input_data["cCO2TnS"]
         ], dtype=np.float64).reshape(1, -1)
     except Exception as e:
-        return {"error": f"Invalid input format: {e}"}
+        return {"error": f"Invalid input vector: {str(e)}"}
 
-    # Prediction loop
+    # Prediction results
     results = {}
-    for cfg in config_list:
-        m = models.get(cfg)
-        if m is None:
-            results[cfg] = {"error": "Model not loaded"}
-            continue
-
+    for config_name in config_list:
         try:
-            y = safe_predict(m, x)
-            results[cfg] = {
-                "cost": round(y, 4),
-                "emissions": round(float(emissions.get(cfg, 0.0)), 4),
-                "spec_energy": round(float(energy.get(cfg, 0.0)), 4)
+            model = models.get(config_name)
+            if model is None:
+                raise ValueError("Model not loaded.")
+
+            x = np.ascontiguousarray(input_vector, dtype=np.float64)
+
+            # Hybrid handling: Pipeline (sklearn) vs callable (e.g., RBFInterpolator)
+            if hasattr(model, "predict"):
+                cost = float(model.predict(x)[0])
+            else:
+                cost = float(model(x)[0])
+
+            emissions = float(emissions_dict.get(config_name, 0.0))
+            spec_energy = float(energy_dict.get(config_name, 0.0))
+
+            results[config_name] = {
+                "cost": round(cost, 4),
+                "emissions": round(emissions, 4),
+                "spec_energy": round(spec_energy, 4)
             }
         except Exception as e:
-            err = str(e).split("\n")[0][:250]
-            results[cfg] = {"error": err}
+            results[config_name] = {"error": str(e)}
 
     return {"results": results}
 
-
-# Serve frontend if exists
+# Path to built frontend
 FRONTEND_DIST = BASE_DIR / "pareto-frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="static")

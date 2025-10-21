@@ -94,13 +94,22 @@ async def predict(request: Request):
             if model is None:
                 raise ValueError("Model not loaded.")
 
+            # Ensure all arrays are contiguous (for Pythran)
             x = np.ascontiguousarray(input_vector, dtype=np.float64)
 
-            # Hybrid handling: Pipeline (sklearn) vs callable (e.g., RBFInterpolator)
+            # For models that store internal arrays (like RBFInterpolator)
+            if hasattr(model, 'y'):
+                model.y = np.ascontiguousarray(model.y)
+            if hasattr(model, 'xi'):
+                model.xi = np.ascontiguousarray(model.xi)
+            if hasattr(model, '_nodes'):
+                model._nodes = np.ascontiguousarray(model._nodes)
+
+            # Predict cost depending on model type
             if hasattr(model, "predict"):
                 cost = float(model.predict(x)[0])
             else:
-                cost = float(model(x)[0])
+                cost = float(model(np.ascontiguousarray(x))[0])
 
             emissions = float(emissions_dict.get(config_name, 0.0))
             spec_energy = float(energy_dict.get(config_name, 0.0))
@@ -110,12 +119,14 @@ async def predict(request: Request):
                 "emissions": round(emissions, 4),
                 "spec_energy": round(spec_energy, 4)
             }
+
         except Exception as e:
             results[config_name] = {"error": str(e)}
 
     return {"results": results}
 
-# Path to built frontend
+
+# Serve built React frontend if exists
 FRONTEND_DIST = BASE_DIR / "pareto-frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="static")

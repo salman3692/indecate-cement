@@ -2,7 +2,7 @@ POST http://127.0.0.1:8000/predict
 Content-Type: application/json
 
 {
-  "cEE": 0.2,
+  "cEE": 0.1,
   "cH2": 0.12,
   "cNG": 0.035,
   "cbioCH4": 0.070,

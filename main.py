@@ -1,28 +1,66 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
+
+# --------- CRITICAL PATCH for SciPy RBFInterpolator + Pythran ----------
+def _patch_scipy_rbf_pythran():
+    """
+    Monkey-patch SciPy's internal pythran function used by RBFInterpolator
+    so that it always receives C-contiguous arrays with the expected dtypes.
+    This avoids runtime errors like:
+      "Invalid call to pythranized function ... (is a view)"
+    """
+    try:
+        import scipy
+        # SciPy 1.11+ keeps this here:
+        from scipy.interpolate import _rbfinterp_pythran as _rbf_mod
+    except Exception:
+        # If SciPy not present or layout different, just skip patch.
+        return
+
+    if not hasattr(_rbf_mod, "_build_evaluation_coefficients"):
+        return
+
+    _orig = _rbf_mod._build_evaluation_coefficients
+
+    def _patched_build_eval_coeffs(A, B, kernel, epsilon, neighbors, scaling, shifts):
+        # Coerce all array-like inputs to the exact layout/types pythran expects
+        A2 = np.ascontiguousarray(A, dtype=np.float64)
+        B2 = np.ascontiguousarray(B, dtype=np.float64)
+        # neighbors must be int32 2D C-contiguous
+        N2 = np.ascontiguousarray(neighbors, dtype=np.int32)
+        s2 = np.ascontiguousarray(scaling, dtype=np.float64)
+        sh2 = np.ascontiguousarray(shifts, dtype=np.float64)
+        eps = float(epsilon)
+        return _orig(A2, B2, kernel, eps, N2, s2, sh2)
+
+    # Apply the patch
+    _rbf_mod._build_evaluation_coefficients = _patched_build_eval_coeffs
+
+_patch_scipy_rbf_pythran()
+# -----------------------------------------------------------------------
 
 app = FastAPI()
 
-# Enable CORS for frontend
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # tighten later if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Base directories
+# Paths
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 EMISSIONS_FILE = BASE_DIR / "emissions.csv"
 
-# Config list (extended with MEA_HPs)
+# All configurations
 config_list = [
     "BM", "BM_CC_CaL", "BM_CC_MEA", "BM_CC_MEA_HPs", "BM_CC_Oxy",
     "BG", "BG_CC_CaL", "BG_CC_MEA", "BG_CC_MEA_HPs", "BG_CC_Oxy",
@@ -33,89 +71,111 @@ config_list = [
     "Hybrid", "Plasma"
 ]
 
-# Load surrogate models
+def smart_load_model(path: Path):
+    """Load a model and unwrap common tuple formats like (preproc, model)."""
+    try:
+        m = joblib.load(path)
+        if isinstance(m, tuple):
+            # pick the first callable/.predict item
+            for part in m:
+                if hasattr(part, "predict") or callable(part):
+                    m = part
+                    break
+        return m
+    except Exception as e:
+        print(f" Could not load {path.name}: {e}")
+        return None
+
+# Load all models
 models = {}
-for config_name in config_list:
-    file_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
-    if file_path.exists():
-        try:
-            model = joblib.load(file_path)
-            # If model is a tuple (e.g., (poly, model)), unpack
-            if isinstance(model, tuple):
-                model = model[0]
-            models[config_name] = model
-        except Exception as e:
-            print(f"Failed to load {config_name}: {e}")
+for name in config_list:
+    fp = MODELS_DIR / f"surrogate_{name}.pkl"
+    if fp.exists():
+        mdl = smart_load_model(fp)
+        if mdl is not None:
+            models[name] = mdl
+        else:
+            print(f" Skipped {name} due to load error")
     else:
-        print(f"Skipped model: {config_name} (file not found)")
+        print(f" Missing model file: surrogate_{name}.pkl")
 
 @app.post("/predict")
 async def predict(request: Request):
-    input_data = await request.json()
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"error": "Invalid JSON"}
 
-    # Extract emission scenario (default to RE1 if not provided)
-    scenario_key = input_data.get("emission_scenario", "RE1")
-    scenario_map = {
+    # Emission scenario mapping
+    scen = payload.get("emission_scenario", "RE1")
+    scen_map = {
         "fossil": "Emissions_energmix_fossil",
         "RE1": "Emissions_energymix_RE1",
         "RE2": "Emissions_energymix_RE2"
     }
+    col = scen_map.get(scen)
+    if col is None:
+        return {"error": f"Invalid emission_scenario: {scen}"}
 
-    emissions_column = scenario_map.get(scenario_key)
-    if emissions_column is None:
-        return {"error": f"Invalid emission_scenario: {scenario_key}"}
-
-    # Load emissions and energy data from CSV
-    emissions_df = pd.read_csv(EMISSIONS_FILE)
-    emissions_dict = dict(zip(emissions_df['Case'], emissions_df[emissions_column]))
-    energy_dict = dict(zip(emissions_df['Case'], emissions_df['Spec_Energy']))
-
-    # Create input array
+    # Emissions/spec energy
     try:
-        input_vector = np.array([
-            input_data["cEE"],
-            input_data["cH2"],
-            input_data["cNG"],
-            input_data["cbioCH4"],
-            input_data["cbiomass"],
-            input_data["cCoal"],
-            input_data["cMSW"],
-            input_data["cCO2"],
-            input_data["cCO2TnS"]
-        ], dtype=np.float64).reshape(1, -1)
+        df = pd.read_csv(EMISSIONS_FILE)
+        emap = dict(zip(df["Case"], df[col]))
+        smap = dict(zip(df["Case"], df["Spec_Energy"]))
     except Exception as e:
-        return {"error": f"Invalid input vector: {str(e)}"}
+        return {"error": f"Failed to read emissions file: {e}"}
 
-    # Prediction results
+    # Input vector
+    try:
+        x = np.array([
+            payload["cEE"],
+            payload["cH2"],
+            payload["cNG"],
+            payload["cbioCH4"],
+            payload["cbiomass"],
+            payload["cCoal"],
+            payload["cMSW"],
+            payload["cCO2"],
+            payload["cCO2TnS"],
+        ], dtype=np.float64).reshape(1, -1)
+        x = np.ascontiguousarray(x, dtype=np.float64)
+    except Exception as e:
+        return {"error": f"Invalid input vector: {e}"}
+
     results = {}
-    for config_name in config_list:
+    for name in config_list:
+        m = models.get(name)
+        if m is None:
+            results[name] = {"error": "Model not loaded"}
+            continue
+
         try:
-            model = models.get(config_name)
-            if model is None:
-                raise ValueError("Model not loaded.")
-
-            x = np.ascontiguousarray(input_vector, dtype=np.float64)
-
-            # Hybrid handling: Pipeline (sklearn) vs callable (e.g., RBFInterpolator)
-            if hasattr(model, "predict"):
-                cost = float(model.predict(x)[0])
+            if hasattr(m, "predict"):
+                y = m.predict(x)
             else:
-                cost = float(model(x)[0])
+                # callable model (e.g., RBFInterpolator)
+                try:
+                    y = m(x)
+                except Exception:
+                    # Some expect (n_features,) not (1, n_features)
+                    y = m(np.ascontiguousarray(x.ravel(), dtype=np.float64))
+            # y may be array-like; take first scalar
+            cost = float(np.ascontiguousarray(y).ravel()[0])
 
-            emissions = float(emissions_dict.get(config_name, 0.0))
-            spec_energy = float(energy_dict.get(config_name, 0.0))
-
-            results[config_name] = {
+            results[name] = {
                 "cost": round(cost, 4),
-                "emissions": round(emissions, 4),
-                "spec_energy": round(spec_energy, 4)
+                "emissions": round(float(emap.get(name, 0.0)), 4),
+                "spec_energy": round(float(smap.get(name, 0.0)), 4),
             }
+
         except Exception as e:
-            results[config_name] = {"error": str(e)}
+            # Short, clean message back to UI
+            msg = str(e).split("\n")[0][:250]
+            results[name] = {"error": msg}
 
     return {"results": results}
 
-# Path to built frontend
+# Serve built frontend (optional)
 FRONTEND_DIST = BASE_DIR / "pareto-frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="static")

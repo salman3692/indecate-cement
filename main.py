@@ -22,14 +22,14 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 EMISSIONS_FILE = BASE_DIR / "emissions.csv"
 
-# Config list (26 configs)
+# Config list (extended with MEA_HPs)
 config_list = [
-    "BM", "BM_CC_CaL", "BM_CC_MEA", "BM_CC_Oxy",
-    "BG", "BG_CC_CaL", "BG_CC_MEA", "BG_CC_Oxy",
-    "Coal", "Coal_CC_CaL", "Coal_CC_MEA", "Coal_CC_Oxy",
-    "H2", "H2_CC_CaL", "H2_CC_MEA", "H2_CC_Oxy",
-    "MSW", "MSW_CC_CaL", "MSW_CC_MEA", "MSW_CC_Oxy",
-    "NG", "NG_CC_CaL", "NG_CC_MEA", "NG_CC_Oxy",
+    "BM", "BM_CC_CaL", "BM_CC_MEA", "BM_CC_MEA_HPs", "BM_CC_Oxy",
+    "BG", "BG_CC_CaL", "BG_CC_MEA", "BG_CC_MEA_HPs", "BG_CC_Oxy",
+    "Coal", "Coal_CC_CaL", "Coal_CC_MEA", "Coal_CC_MEA_HPs", "Coal_CC_Oxy",
+    "H2", "H2_CC_CaL", "H2_CC_MEA", "H2_CC_MEA_HPs", "H2_CC_Oxy",
+    "MSW", "MSW_CC_CaL", "MSW_CC_MEA", "MSW_CC_MEA_HPs", "MSW_CC_Oxy",
+    "NG", "NG_CC_CaL", "NG_CC_MEA", "NG_CC_MEA_HPs", "NG_CC_Oxy",
     "Hybrid", "Plasma"
 ]
 
@@ -40,11 +40,14 @@ for config_name in config_list:
     if file_path.exists():
         try:
             model = joblib.load(file_path)
+            # If model is a tuple (e.g., (poly, model)), unpack
+            if isinstance(model, tuple):
+                model = model[0]
             models[config_name] = model
         except Exception as e:
-            print(f"❌ Failed to load {config_name}: {e}")
+            print(f"Failed to load {config_name}: {e}")
     else:
-        print(f"⚠️  Skipped model: {config_name} (file not found)")
+        print(f"Skipped model: {config_name} (file not found)")
 
 @app.post("/predict")
 async def predict(request: Request):
@@ -59,7 +62,6 @@ async def predict(request: Request):
     }
 
     emissions_column = scenario_map.get(scenario_key)
-
     if emissions_column is None:
         return {"error": f"Invalid emission_scenario: {scenario_key}"}
 
@@ -80,7 +82,7 @@ async def predict(request: Request):
             input_data["cMSW"],
             input_data["cCO2"],
             input_data["cCO2TnS"]
-        ],  dtype=np.float64).reshape(1, -1)
+        ], dtype=np.float64).reshape(1, -1)
     except Exception as e:
         return {"error": f"Invalid input vector: {str(e)}"}
 
@@ -91,9 +93,18 @@ async def predict(request: Request):
             model = models.get(config_name)
             if model is None:
                 raise ValueError("Model not loaded.")
-            cost = float(model(np.ascontiguousarray(input_vector, dtype=np.float64))[0])
+
+            x = np.ascontiguousarray(input_vector, dtype=np.float64)
+
+            # Hybrid handling: Pipeline (sklearn) vs callable (e.g., RBFInterpolator)
+            if hasattr(model, "predict"):
+                cost = float(model.predict(x)[0])
+            else:
+                cost = float(model(x)[0])
+
             emissions = float(emissions_dict.get(config_name, 0.0))
             spec_energy = float(energy_dict.get(config_name, 0.0))
+
             results[config_name] = {
                 "cost": round(cost, 4),
                 "emissions": round(emissions, 4),

@@ -1,7 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 
-const fillPatternMap = { noCC: null, MEA: 'hatch', Oxy: 'cross', CaL: 'dot' };
+const fillPatternMap = { 
+  noCC: null, 
+  MEA: 'hatch', 
+  MEA_HPs: 'hatch-horizontal', // 🔹 new entry
+  Oxy: 'cross', 
+  CaL: 'dot' 
+};
+
 const FONT = 'Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
 function getEnergyColor(se, minE, maxE) {
@@ -58,9 +65,20 @@ function createPatternedSymbol(base, patternType, color) {
   } else {
     const p = document.createElement('canvas'); p.width = 8; p.height = 8;
     const pc = p.getContext('2d'); pc.strokeStyle = color; pc.fillStyle = color; pc.lineWidth = 1.5;
-    if (patternType === 'hatch') { pc.beginPath(); pc.moveTo(4,0); pc.lineTo(4,8); pc.stroke(); }
-    else if (patternType === 'cross') { pc.beginPath(); pc.moveTo(4,0); pc.lineTo(4,8); pc.moveTo(0,4); pc.lineTo(8,4); pc.stroke(); }
-    else if (patternType === 'dot') { pc.beginPath(); pc.arc(4,4,1.5,0,Math.PI*2); pc.fill(); }
+
+    if (patternType === 'hatch') { 
+      pc.beginPath(); pc.moveTo(4,0); pc.lineTo(4,8); pc.stroke(); 
+    }
+    else if (patternType === 'hatch-horizontal') { 
+      pc.beginPath(); pc.moveTo(0,4); pc.lineTo(8,4); pc.stroke(); 
+    }
+    else if (patternType === 'cross') { 
+      pc.beginPath(); pc.moveTo(4,0); pc.lineTo(4,8); pc.moveTo(0,4); pc.lineTo(8,4); pc.stroke(); 
+    }
+    else if (patternType === 'dot') { 
+      pc.beginPath(); pc.arc(4,4,1.5,0,Math.PI*2); pc.fill(); 
+    }
+
     ctx.fillStyle = ctx.createPattern(p, 'repeat'); ctx.fillRect(0,0,size,size);
   }
 
@@ -105,7 +123,8 @@ export default function ParetoChart({ results, emissionScenario }) {
         const base = config.includes('_') ? config.split('_')[0] : config;
         let cc = 'noCC';
         const lc = config.toLowerCase();
-        if (lc.includes('mea')) cc = 'MEA';
+        if (lc.includes('mea_hps')) cc = 'MEA_HPs';   // 🔹 new condition
+        else if (lc.includes('mea')) cc = 'MEA';
         else if (lc.includes('oxy')) cc = 'Oxy';
         else if (lc.includes('cal')) cc = 'CaL';
         return { config, base, cc, cost: v.cost, emis: v.emissions, se: v.spec_energy };
@@ -142,6 +161,7 @@ export default function ParetoChart({ results, emissionScenario }) {
 
     const ccLegendSeries = [
       { name: 'CC_MEA', type: 'scatter', data: [], symbol: createPatternedSymbol('rect', 'hatch', '#111111'), symbolSize: 16, silent: true, tooltip: { show: false } },
+      { name: 'CC_MEA_HPs', type: 'scatter', data: [], symbol: createPatternedSymbol('rect', 'hatch-horizontal', '#111111'), symbolSize: 16, silent: true, tooltip: { show: false } }, // 🔹 new legend
       { name: 'OxyCC', type: 'scatter', data: [], symbol: createPatternedSymbol('rect', 'cross', '#111111'), symbolSize: 16, silent: true, tooltip: { show: false } },
       { name: 'CC_CaL', type: 'scatter', data: [], symbol: createPatternedSymbol('rect', 'dot', '#111111'), symbolSize: 16, silent: true, tooltip: { show: false } },
     ];
@@ -171,14 +191,14 @@ export default function ParetoChart({ results, emissionScenario }) {
       legend: {
         type: 'plain',
         orient: 'vertical',
-        right: 20,
-        top: 90,
+        right: 10,
+        top: 55,
         itemWidth: 20,
         itemHeight: 20,
         symbolKeepAspect: true,
         itemGap: 16,
         textStyle: { fontSize: 12, color: '#374151', fontFamily: FONT },
-        data: [...Object.keys(byBase), 'CC_MEA', 'OxyCC', 'CC_CaL'],
+        data: [...Object.keys(byBase), 'CC_MEA', 'CC_MEA_HPs', 'OxyCC', 'CC_CaL'],
       },
       xAxis: {
         name: 'Total Cost (€/t of Clinker)', nameLocation: 'middle', nameGap: 35,

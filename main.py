@@ -56,11 +56,9 @@ def _repair_object_graph(obj, _seen: set):
         return
     _seen.add(oid)
 
-    # If directly an ndarray
     if isinstance(obj, np.ndarray):
-        return  # handled by caller that owns attribute
+        return
 
-    # If it's a dict-like
     if isinstance(obj, dict):
         for k, v in list(obj.items()):
             if isinstance(v, np.ndarray):
@@ -69,7 +67,6 @@ def _repair_object_graph(obj, _seen: set):
                 _repair_object_graph(v, _seen)
         return
 
-    # If it's a list/tuple
     if isinstance(obj, (list, tuple)):
         for i, v in enumerate(list(obj)):
             if isinstance(v, np.ndarray):
@@ -77,7 +74,6 @@ def _repair_object_graph(obj, _seen: set):
                 try:
                     obj[i] = new_v  # works for lists
                 except TypeError:
-                    # tuple: rebuild
                     new_tuple = list(obj)
                     new_tuple[i] = new_v
                     obj = type(obj)(new_tuple)
@@ -85,8 +81,6 @@ def _repair_object_graph(obj, _seen: set):
                 _repair_object_graph(v, _seen)
         return
 
-    # If it looks like a user-defined object, walk its attributes
-    # Avoid functions/methods/properties
     try:
         members = inspect.getmembers(obj, lambda a: not(inspect.isroutine(a)))
     except Exception:
@@ -95,7 +89,6 @@ def _repair_object_graph(obj, _seen: set):
     for name, val in members:
         if name.startswith("__"):
             continue
-        # Skip properties that raise on set
         try:
             getattr(obj, name)
         except Exception:
@@ -107,7 +100,6 @@ def _repair_object_graph(obj, _seen: set):
             except Exception:
                 pass
         else:
-            # Recurse into sub-objects (estimators inside pipelines, etc.)
             try:
                 _repair_object_graph(val, _seen)
             except Exception:
@@ -128,16 +120,14 @@ def smart_load(path: Path):
     try:
         m = joblib.load(path)
         if isinstance(m, tuple):
-            # Prefer the first callable / predictor-like element
             for part in m:
                 if hasattr(part, "predict") or callable(part):
                     m = part
                     break
-        # Deep repair: cast all internal arrays to expected dtypes and contiguity
         m = repair_model_arrays(m)
         return m
     except Exception as e:
-        print(f" Failed to load {path.name}: {e}")
+        print(f"Failed to load {path.name}: {e}")
         return None
 
 models = {}
@@ -148,54 +138,61 @@ for cfg in config_list:
         if mdl is not None:
             models[cfg] = mdl
         else:
-            print(f" Skipped {cfg} due to load error")
+            print(f"Skipped {cfg} due to load error")
     else:
-        print(f" Missing model file for {cfg}")
+        print(f"Missing model file for {cfg}")
 
 def run_predict(model, x: np.ndarray) -> float:
     """
-    Predict with maximal compatibility:
-    - sklearn-like: .predict
-    - callable: model(x) or model(x.ravel())
-    Also retries with contiguous input if needed.
+    Predict with robust logic:
+    - Always use 2D (n_samples, n_features) first.
+    - If error indicates Pythran/view/dtype, repair and retry 2D.
+    - Only try 1D fallback if error explicitly says 'must be a 1-dimensional array'.
     """
-    # Ensure input is float64, contiguous, 2D
     x2 = np.ascontiguousarray(x, dtype=np.float64)
     if x2.ndim == 1:
         x2 = x2.reshape(1, -1)
+    elif x2.ndim != 2:
+        raise ValueError("Input x must be 1D or 2D.")
 
-    # Some models (RBF) cache neighbor arrays per call; ensure post-load repair is enough.
-    # First attempt: sklearn predict
     if hasattr(model, "predict"):
         try:
             y = model.predict(x2)
             return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
-        except Exception:
-            pass
-
-    # Second: callable
-    if callable(model):
-        # try 2D then 1D (some callables accept 1D)
-        for candidate in (x2, x2.ravel()):
-            try:
-                y = model(candidate)
+        except Exception as e:
+            msg = str(e)
+            if ("pythranized" in msg) or ("is a view" in msg) or ("contiguous" in msg):
+                repair_model_arrays(model)
+                y = model.predict(x2)
                 return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
-            except Exception as e:
-                # If the failure smells like view/dtype mismatch, try another pass:
-                msg = str(e)
-                if "pythranized" in msg or "is a view" in msg:
-                    # Re-repair model internals once more (some callables build caches lazily)
-                    repair_model_arrays(model)
-                    try:
-                        y = model(candidate)
-                        return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
-                    except Exception:
-                        continue
-                # else keep trying next candidate
-        # If still not working, bubble up last exception
-        raise
+            raise
 
-    # No usable interface
+    if callable(model):
+        try:
+            y = model(x2)
+            return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
+        except Exception as e:
+            msg = str(e)
+
+            if ("pythranized" in msg) or ("is a view" in msg) or ("contiguous" in msg):
+                repair_model_arrays(model)
+                y = model(x2)
+                return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
+
+            if "must be a 1-dimensional array" in msg:
+                x1 = np.ascontiguousarray(x2.ravel(), dtype=np.float64)
+                try:
+                    y = model(x1)
+                    return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
+                except Exception as e2:
+                    msg2 = str(e2)
+                    if ("pythranized" in msg2) or ("is a view" in msg2) or ("contiguous" in msg2):
+                        repair_model_arrays(model)
+                        y = model(x1)
+                        return float(np.ascontiguousarray(y, dtype=np.float64).ravel()[0])
+                    raise RuntimeError(msg)
+            raise
+
     raise TypeError("Model is neither sklearn-like nor callable")
 
 # ---------- API ----------
@@ -215,7 +212,6 @@ async def predict(request: Request):
     }
     col = col_map.get(scenario_key, "Emissions_energymix_RE1")
 
-    # Load emissions/spec energy
     try:
         df = pd.read_csv(EMISSIONS_FILE)
         em_map = dict(zip(df["Case"], df[col]))
@@ -223,7 +219,6 @@ async def predict(request: Request):
     except Exception as e:
         return {"error": f"Failed to read emissions.csv: {e}"}
 
-    # Build input vector
     try:
         x = np.array([
             payload["cEE"],
@@ -253,7 +248,6 @@ async def predict(request: Request):
                 "spec_energy": round(float(se_map.get(cfg, 0.0)), 4),
             }
         except Exception as e:
-            # short, clean message
             msg = str(e).split("\n")[0][:300]
             results[cfg] = {"error": msg}
 

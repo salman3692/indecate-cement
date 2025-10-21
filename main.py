@@ -33,6 +33,16 @@ config_list = [
     "Hybrid", "Plasma"
 ]
 
+def make_contiguous(model):
+    """Ensure all numpy arrays inside the model are contiguous."""
+    try:
+        for attr in ["xi", "y", "_nodes", "_coeffs", "_norm", "_neighbors"]:
+            if hasattr(model, attr):
+                setattr(model, attr, np.ascontiguousarray(getattr(model, attr)))
+    except Exception:
+        pass
+    return model
+
 # Load surrogate models
 models = {}
 for config_name in config_list:
@@ -40,9 +50,9 @@ for config_name in config_list:
     if file_path.exists():
         try:
             model = joblib.load(file_path)
-            # If model is a tuple (e.g., (poly, model)), unpack
-            if isinstance(model, tuple):
+            if isinstance(model, tuple):  # unpack if saved as (poly, model)
                 model = model[0]
+            model = make_contiguous(model)  # fix internal arrays
             models[config_name] = model
         except Exception as e:
             print(f"Failed to load {config_name}: {e}")
@@ -53,7 +63,7 @@ for config_name in config_list:
 async def predict(request: Request):
     input_data = await request.json()
 
-    # Extract emission scenario (default to RE1 if not provided)
+    # Extract emission scenario (default to RE1)
     scenario_key = input_data.get("emission_scenario", "RE1")
     scenario_map = {
         "fossil": "Emissions_energmix_fossil",
@@ -70,7 +80,7 @@ async def predict(request: Request):
     emissions_dict = dict(zip(emissions_df['Case'], emissions_df[emissions_column]))
     energy_dict = dict(zip(emissions_df['Case'], emissions_df['Spec_Energy']))
 
-    # Create input array
+    # Build input vector
     try:
         input_vector = np.array([
             input_data["cEE"],
@@ -86,31 +96,23 @@ async def predict(request: Request):
     except Exception as e:
         return {"error": f"Invalid input vector: {str(e)}"}
 
-    # Prediction results
+    x = np.ascontiguousarray(input_vector, dtype=np.float64)
+
+    # Run predictions
     results = {}
     for config_name in config_list:
         try:
             model = models.get(config_name)
             if model is None:
-                raise ValueError("Model not loaded.")
+                raise ValueError("Model not loaded")
 
-            # Ensure all arrays are contiguous (for Pythran)
-            x = np.ascontiguousarray(input_vector, dtype=np.float64)
-
-            # For models that store internal arrays (like RBFInterpolator)
-            if hasattr(model, 'y'):
-                model.y = np.ascontiguousarray(model.y)
-            if hasattr(model, 'xi'):
-                model.xi = np.ascontiguousarray(model.xi)
-            if hasattr(model, '_nodes'):
-                model._nodes = np.ascontiguousarray(model._nodes)
-
-            # Predict cost depending on model type
+            # Predict depending on model type
             if hasattr(model, "predict"):
-                cost = float(model.predict(x)[0])
+                y_pred = model.predict(x)
             else:
-                cost = float(model(np.ascontiguousarray(x))[0])
+                y_pred = model(x)
 
+            cost = float(np.ascontiguousarray(y_pred)[0])
             emissions = float(emissions_dict.get(config_name, 0.0))
             spec_energy = float(energy_dict.get(config_name, 0.0))
 
@@ -124,7 +126,6 @@ async def predict(request: Request):
             results[config_name] = {"error": str(e)}
 
     return {"results": results}
-
 
 # Serve built React frontend if exists
 FRONTEND_DIST = BASE_DIR / "pareto-frontend" / "dist"

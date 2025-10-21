@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
+import inspect
 
 app = FastAPI()
 
@@ -33,56 +34,70 @@ config_list = [
     "Hybrid", "Plasma"
 ]
 
-def make_contiguous(model):
-    """Ensure all numpy arrays inside the model are contiguous."""
+def smart_load_model(path):
+    """Try to load any type of model safely and unwrap if needed."""
     try:
+        model = joblib.load(path)
+
+        # If it's a tuple like (poly, model) or (scaler, model)
+        if isinstance(model, tuple):
+            # try to find actual model part inside tuple
+            for item in model:
+                if callable(item) or hasattr(item, "predict"):
+                    model = item
+                    break
+
+        # Contiguize known numeric arrays (optional safety)
         for attr in ["xi", "y", "_nodes", "_coeffs", "_norm", "_neighbors"]:
             if hasattr(model, attr):
-                setattr(model, attr, np.ascontiguousarray(getattr(model, attr)))
-    except Exception:
-        pass
-    return model
+                arr = getattr(model, attr)
+                if isinstance(arr, np.ndarray):
+                    setattr(model, attr, np.ascontiguousarray(arr))
 
-# Load surrogate models
+        return model
+
+    except Exception as e:
+        print(f" Failed to load model {path.name}: {e}")
+        return None
+
+
+# Load surrogate models dynamically
 models = {}
 for config_name in config_list:
-    file_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
-    if file_path.exists():
-        try:
-            model = joblib.load(file_path)
-            if isinstance(model, tuple):  # unpack if saved as (poly, model)
-                model = model[0]
-            model = make_contiguous(model)  # fix internal arrays
+    model_path = MODELS_DIR / f"surrogate_{config_name}.pkl"
+    if model_path.exists():
+        model = smart_load_model(model_path)
+        if model is not None:
             models[config_name] = model
-        except Exception as e:
-            print(f"Failed to load {config_name}: {e}")
+        else:
+            print(f"Skipped {config_name} due to load error")
     else:
-        print(f"Skipped model: {config_name} (file not found)")
+        print(f" Model not found for {config_name}")
+
 
 @app.post("/predict")
 async def predict(request: Request):
     input_data = await request.json()
 
-    # Extract emission scenario (default to RE1)
+    # Extract emission scenario (default to RE1 if not provided)
     scenario_key = input_data.get("emission_scenario", "RE1")
     scenario_map = {
         "fossil": "Emissions_energmix_fossil",
         "RE1": "Emissions_energymix_RE1",
         "RE2": "Emissions_energymix_RE2"
     }
-
     emissions_column = scenario_map.get(scenario_key)
     if emissions_column is None:
         return {"error": f"Invalid emission_scenario: {scenario_key}"}
 
-    # Load emissions and energy data from CSV
+    # Load emissions and specific energy data
     emissions_df = pd.read_csv(EMISSIONS_FILE)
     emissions_dict = dict(zip(emissions_df['Case'], emissions_df[emissions_column]))
     energy_dict = dict(zip(emissions_df['Case'], emissions_df['Spec_Energy']))
 
-    # Build input vector
+    # Prepare input vector
     try:
-        input_vector = np.array([
+        x = np.array([
             input_data["cEE"],
             input_data["cH2"],
             input_data["cNG"],
@@ -94,11 +109,11 @@ async def predict(request: Request):
             input_data["cCO2TnS"]
         ], dtype=np.float64).reshape(1, -1)
     except Exception as e:
-        return {"error": f"Invalid input vector: {str(e)}"}
+        return {"error": f"Invalid input vector: {e}"}
 
-    x = np.ascontiguousarray(input_vector, dtype=np.float64)
+    x = np.ascontiguousarray(x, dtype=np.float64)
 
-    # Run predictions
+    # Prediction phase
     results = {}
     for config_name in config_list:
         try:
@@ -106,13 +121,30 @@ async def predict(request: Request):
             if model is None:
                 raise ValueError("Model not loaded")
 
-            # Predict depending on model type
+            # sklearn-like model
             if hasattr(model, "predict"):
                 y_pred = model.predict(x)
-            else:
-                y_pred = model(x)
 
-            cost = float(np.ascontiguousarray(y_pred)[0])
+            # callable function (e.g., RBFInterpolator or custom)
+            elif callable(model):
+                # sometimes model() expects plain ndarray, not (1, n)
+                try:
+                    y_pred = model(x)
+                except Exception:
+                    y_pred = model(x.flatten())
+
+            # fallback: evaluate any callable attribute
+            else:
+                callable_attrs = [
+                    getattr(model, a) for a in dir(model)
+                    if callable(getattr(model, a)) and not a.startswith("_")
+                ]
+                if callable_attrs:
+                    y_pred = callable_attrs[0](x)
+                else:
+                    raise ValueError("Model has no callable interface")
+
+            cost = float(np.ascontiguousarray(y_pred).ravel()[0])
             emissions = float(emissions_dict.get(config_name, 0.0))
             spec_energy = float(energy_dict.get(config_name, 0.0))
 
@@ -123,11 +155,14 @@ async def predict(request: Request):
             }
 
         except Exception as e:
-            results[config_name] = {"error": str(e)}
+            # Simplify error message for frontend
+            msg = str(e).split("\n")[0][:300]
+            results[config_name] = {"error": msg}
 
     return {"results": results}
 
-# Serve built React frontend if exists
+
+# Serve built frontend if it exists
 FRONTEND_DIST = BASE_DIR / "pareto-frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="static")

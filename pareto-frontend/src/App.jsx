@@ -251,8 +251,8 @@ export default function App() {
       <div style={{
         width: L.dashboardWidth,
         height: L.dashboardHeight,
-        maxWidth: '95vw',
-        maxHeight: '92vh',
+        maxWidth: '100vw',
+        maxHeight: '100vh',
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'stretch',

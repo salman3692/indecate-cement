@@ -243,8 +243,8 @@ export default function App() {
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
-      background: L.bg,
-      padding: 16,
+      background: '#ffffff',
+      padding: 5,
       boxSizing: 'border-box',
     }}>
       {/* Dashboard shell */}

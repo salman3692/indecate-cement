@@ -1,7 +1,7 @@
+
+########################################################################################
+# The following code is the version for online deployment."
 #########################################################################################
-# # The following code is the version for online deployment. Make sure to change code from
-# # local deployment.txt file if you wanna deploy locally.
-##########################################################################################
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware

@@ -1,6 +1,7 @@
-#########################################################################################
+ #########################################################################################
 # # The following code is the version for local deployment. Make sure to change code from
 # # online deployment.txt file if you wanna deploy online.
+# # Also change line 59 in App.jsx
 ##########################################################################################
 
 from fastapi import FastAPI, Request

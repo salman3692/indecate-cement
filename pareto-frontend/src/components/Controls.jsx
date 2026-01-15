@@ -1,24 +1,25 @@
 // src/components/Controls.jsx
 import React, { useMemo } from 'react';
 
-// ✅ Same font family as ParetoChart
-const FONT = 'Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
-// sdfsdf
 export default function Controls({
+  ui,
   inputs, setInputs,
   emissionScenario, setEmissionScenario,
-  onGenerate, loading, error, //sffsd
+  onGenerate, loading, error,
 }) {
+  const C = ui.controls;
+  const FONT = C.fontFamily;
+
   const fields = useMemo(() => ({
-    cEE:       { label: 'Electricity', unit: '((€/MWh))', min: 0.01, max: 0.175, step: 0.001 },
-    cH2:       { label: 'Hydrogen',   unit: '(€/MWh)', min: 0.01, max: 0.10,  step: 0.001 },
-    cNG:       { label: 'Natural Gas',   unit: '(€/MWh)', min: 0.01, max: 0.10,  step: 0.001 },
-    cbioCH4:   { label: 'Bio Methane',    unit: '(€/MWh)', min: 0.03, max: 0.09,  step: 0.001 },
-    cbiomass:  { label: 'Biomass',    unit: '(€/MWh)', min: 0.01, max: 0.09,  step: 0.001 },
-    cCoal:     { label: 'Coal',       unit: '(€/MWh)', min: 0.01, max: 0.09,  step: 0.001 },
-    cMSW:      { label: 'Municipal Solid Waste',        unit: '(€/MWh)', min: 0.01, max: 0.09,  step: 0.001 },
-    cCO2:      { label: 'CO₂ Emissions Cost',  unit: '(€/t)',  min: 0.075,max: 0.25,  step: 0.001 },
-    cCO2TnS:   { label: 'CO₂ Transport & Storage Cost',    unit: '(€/t)',  min: 0.025,max: 0.10,  step: 0.001 },
+    cEE:       { label: 'Electricity', unit: '(€/MWh)', min: 0.01,  max: 0.175, step: 0.001 },
+    cH2:       { label: 'Hydrogen', unit: '(€/MWh)', min: 0.01,  max: 0.10,  step: 0.001 },
+    cNG:       { label: 'Natural Gas', unit: '(€/MWh)', min: 0.01,  max: 0.10,  step: 0.001 },
+    cbioCH4:   { label: 'Bio Methane', unit: '(€/MWh)', min: 0.03,  max: 0.09,  step: 0.001 },
+    cbiomass:  { label: 'Biomass', unit: '(€/MWh)', min: 0.01,  max: 0.09,  step: 0.001 },
+    cCoal:     { label: 'Coal', unit: '(€/MWh)', min: 0.01,  max: 0.09,  step: 0.001 },
+    cMSW:      { label: 'Municipal Solid Waste', unit: '(€/MWh)', min: 0.01,  max: 0.09,  step: 0.001 },
+    cCO2:      { label: 'CO₂ Emissions Cost', unit: '(€/t)', min: 0.075, max: 0.25, step: 0.001 },
+    cCO2TnS:   { label: 'CO₂ Transport & Storage Cost', unit: '(€/t)', min: 0.025, max: 0.10, step: 0.001 },
   }), []);
 
   const handle = (k, v) => setInputs(p => ({ ...p, [k]: v }));
@@ -26,40 +27,54 @@ export default function Controls({
   return (
     <div
       style={{
-        width: 330,
-        height: 640,
-        background: '#fff',
-        borderRadius: 12,
-        border: '1px solid #E5E7EB',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-        padding: 14,
+        width: '100%',
+        height: '100%',
+        background: C.container.bg,
+        borderRadius: C.container.borderRadius,
+        border: C.container.border,
+        boxShadow: C.container.shadow,
+        padding: 0, // parent already pads; keep this clean
         display: 'flex',
         flexDirection: 'column',
-        gap: 12,
-        fontFamily: FONT, // ✅ Apply to whole sidebar
+        gap: C.row.gap,
+        fontFamily: FONT,
+        boxSizing: 'border-box',
+        minHeight: 0,
       }}
     >
       {/* Scenario buttons */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {['fossil','RE1','RE2'].map(s => {
+        <div
+          style={{
+            display: 'flex',
+            gap: C.scenarioBtn.gap,
+            flexWrap: 'wrap',
+            justifyContent:
+              C.scenarioBtn.align === 'center'
+                ? 'center'
+                : C.scenarioBtn.align === 'right'
+                ? 'flex-end'
+                : 'flex-start',
+          }}
+        >
+        {['fossil', 'RE1', 'RE2'].map(s => {
           const active = emissionScenario === s;
           return (
             <button
               key={s}
               onClick={() => setEmissionScenario(s)}
               style={{
-                padding: '6px 10px',
-                borderRadius: 8,
-                border: active ? '1px solid #1D4ED8' : '1px solid #E5E7EB',
-                background: active ? '#1D4ED8' : '#F9FAFB',
-                color: active ? '#fff' : '#374151',
-                fontSize: 12,
+                padding: `${C.scenarioBtn.padY}px ${C.scenarioBtn.padX}px`,
+                borderRadius: C.scenarioBtn.radius,
+                border: active ? C.scenarioBtn.activeBorder : C.scenarioBtn.inactiveBorder,
+                background: active ? C.scenarioBtn.activeBg : C.scenarioBtn.inactiveBg,
+                color: active ? C.scenarioBtn.activeColor : C.scenarioBtn.inactiveColor,
+                fontSize: C.scenarioBtn.fontSize,
                 fontWeight: 600,
                 cursor: 'pointer',
-                fontFamily: FONT, // ✅
+                fontFamily: FONT,
               }}
             >
-              {s === 'fossil' ? 'Scenario fossil' : `Scenario ${s}`}
+              {s === 'fossil' ? 'Scn fossil' : `Scn ${s}`}
             </button>
           );
         })}
@@ -69,11 +84,12 @@ export default function Controls({
       <div
         style={{
           flex: 1,
+          minHeight: 0,
           overflowY: 'auto',
           paddingRight: 4,
           display: 'flex',
           flexDirection: 'column',
-          gap: 10,
+          gap: C.row.gap,
         }}
       >
         {Object.entries(fields).map(([key, meta]) => {
@@ -83,27 +99,29 @@ export default function Controls({
               key={key}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '1fr 78px',
+                gridTemplateColumns: `1fr ${C.input.rightColPx}px`,
                 alignItems: 'center',
                 gap: 8,
-                padding: '6px 8px',
-                border: '1px solid #F0F1F3',
-                borderRadius: 10,
-                maxWidth: '90%',
-                background: '#FCFCFD',
-                fontFamily: FONT, // ✅
+                padding: `${C.row.padY}px ${C.row.padX}px`,
+                border: C.row.border,
+                borderRadius: C.row.radius,
+                background: C.row.bg,
+                boxSizing: 'border-box',
               }}
             >
               <label
                 style={{
-                  fontSize: 12,
-                  color: '#374151',
-                  fontWeight: 600,
-                  letterSpacing: 0.2,
-                  fontFamily: FONT, // ✅
+                  fontSize: C.label.fontSize,
+                  color: C.label.color,
+                  fontWeight: C.label.weight,
+                  letterSpacing: C.label.letterSpacing,
+                  lineHeight: 1.2,
                 }}
               >
-                {meta.label} <span style={{ color: '#9CA3AF', fontWeight: 500 }}>{meta.unit}</span>
+                {meta.label}{' '}
+                <span style={{ color: C.label.unitColor, fontWeight: C.label.unitWeight }}>
+                  {meta.unit}
+                </span>
               </label>
 
               <input
@@ -115,12 +133,13 @@ export default function Controls({
                 onChange={e => handle(key, Number(e.target.value) / 1000)}
                 style={{
                   width: '100%',
-                  padding: '6px 8px',
-                  border: '1px solid #E5E7EB',
-                  borderRadius: 8,
-                  fontSize: 12,
+                  padding: `${C.input.padY}px ${C.input.padX}px`,
+                  border: C.input.border,
+                  borderRadius: C.input.radius,
+                  fontSize: C.input.fontSize,
                   textAlign: 'right',
-                  fontFamily: FONT, // ✅
+                  fontFamily: FONT,
+                  boxSizing: 'border-box',
                 }}
               />
 
@@ -134,8 +153,8 @@ export default function Controls({
                 style={{
                   gridColumn: '1 / -1',
                   width: '100%',
-                  height: 4,
-                  accentColor: '#2563EB',
+                  height: C.slider.height,
+                  accentColor: C.slider.accentColor,
                 }}
               />
             </div>
@@ -147,13 +166,13 @@ export default function Controls({
       {error && (
         <div
           style={{
-            fontSize: 12,
-            color: '#B91C1C',
-            background: '#FEF2F2',
-            border: '1px solid #FECACA',
-            borderRadius: 8,
-            padding: '8px 10px',
-            fontFamily: FONT, // ✅
+            fontSize: C.error.fontSize,
+            color: C.error.color,
+            background: C.error.bg,
+            border: C.error.border,
+            borderRadius: C.error.radius,
+            padding: `${C.error.padY}px ${C.error.padX}px`,
+            fontFamily: FONT,
           }}
         >
           {error}
@@ -165,16 +184,16 @@ export default function Controls({
         onClick={onGenerate}
         disabled={loading}
         style={{
-          height: 38,
-          borderRadius: 10,
-          border: '1px solid #1D4ED8',
-          background: '#1D4ED8',
-          color: '#fff',
-          fontWeight: 700,
-          fontSize: 13,
+          height: C.generateBtn.height,
+          borderRadius: C.generateBtn.radius,
+          border: C.generateBtn.border,
+          background: C.generateBtn.bg,
+          color: C.generateBtn.color,
+          fontWeight: C.generateBtn.weight,
+          fontSize: C.generateBtn.fontSize,
           cursor: 'pointer',
           opacity: loading ? 0.7 : 1,
-          fontFamily: FONT, // ✅
+          fontFamily: FONT,
         }}
       >
         {loading ? 'Generating…' : 'Generate'}
